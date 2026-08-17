@@ -1,0 +1,5 @@
+# runtime log written by the server
+revo_server.log
+
+# local Claude Code settings
+.claude/

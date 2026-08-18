@@ -34,3 +34,9 @@ $chrome = @(
 
 if ($chrome) { Start-Process $chrome $url } else { Start-Process $url }
 Write-Host "Opened $url" -ForegroundColor Cyan
+
+# one-time hint: the OBJ->STEP converter needs its Python venv installed
+$venvPy = Join-Path $PSScriptRoot "files\.venv\Scripts\python.exe"
+if (-not (Test-Path $venvPy)) {
+  Write-Host "Note: the OBJ->STEP converter needs one-time setup - run setup_obj2step.ps1 (or double-click setup_obj2step.cmd)." -ForegroundColor Yellow
+}

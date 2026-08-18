@@ -533,15 +533,29 @@ async function killService(){
     '<p class="muted" style="font-size:14px">You can close this tab.<br><br>To start again, type <b>phrozen</b> in a terminal.</p></main>';
 }
 // ---- OBJ -> STEP converter (local Python; never contacts the printer) ----
+let objReady=true;
 function initObj(){
   const z=$("#objzone"),fi=$("#objInput");
-  z.onclick=()=>fi.click();
+  z.onclick=()=>{ if(objReady) fi.click(); };
   fi.onchange=()=>{const f=fi.files[0];fi.value="";if(f)convertObj(f);};
-  ["dragenter","dragover"].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();z.classList.add("drag");}));
+  ["dragenter","dragover"].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();if(objReady)z.classList.add("drag");}));
   ["dragleave","dragend"].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();z.classList.remove("drag");}));
   z.addEventListener("drop",e=>{e.preventDefault();e.stopPropagation();z.classList.remove("drag");const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)convertObj(f);});
+  // detect whether the converter's Python env is installed; if not, show setup help
+  fetch("/api/obj2step/env").then(r=>r.json()).then(j=>{ if(!j.ready) showObjSetupNeeded(); }).catch(()=>{});
+}
+function showObjSetupNeeded(){
+  objReady=false;
+  const z=$("#objzone");z.classList.remove("drag");z.style.cursor="default";
+  z.innerHTML='<div style="text-align:left;line-height:1.6">'+
+    '<b>One-time setup needed.</b> The converter needs its Python environment '+
+    '(~600&nbsp;MB, downloaded once).<br>'+
+    'In a terminal in the project folder run:<br>'+
+    '<code style="display:inline-block;margin:6px 0;padding:6px 9px;background:#0b0e12;border:1px solid var(--line);border-radius:6px">powershell -ExecutionPolicy Bypass -File setup_obj2step.ps1</code><br>'+
+    'or double-click <b>setup_obj2step.cmd</b>. Then reload this page.</div>';
 }
 async function convertObj(file){
+  if(!objReady){ await infoModal("Setup needed","The converter's Python environment isn't installed yet. Run <b>setup_obj2step.ps1</b> (or double-click <b>setup_obj2step.cmd</b>), then reload this page.");return; }
   if(!/\.obj$/i.test(file.name)){ if(!await confirmModal("Not a .obj file","This doesn't look like a Tinkercad <b>.obj</b> export:<br><br>&bull; "+escapeHtml(file.name)+"<br><br>Convert it anyway?","Convert",false))return; }
   const z=$("#objzone"),prog=$("#objProg"),fill=$("#objFill"),stat=$("#objStatus"),res=$("#objResult"),rep=$("#objReport");
   res.style.display="none";res.innerHTML="";rep.style.display="none";rep.textContent="";
@@ -883,6 +897,10 @@ while ($true) {
           }
         }
       }
+    }
+    elseif ($route -eq "/api/obj2step/env") {
+      # lets the UI show a friendly "run setup" note when the venv isn't installed yet
+      Send-Json $resp @{ ready = [bool]((Test-Path $PyExe) -and (Test-Path $Obj2Step)) }
     }
     elseif ($route -eq "/api/obj2step/start" -and $req.HttpMethod -eq "POST") {
       # Save the uploaded .obj to a fresh job folder and launch the converter detached.

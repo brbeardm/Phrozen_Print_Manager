@@ -43,6 +43,20 @@ function Printer-Request([string]$method,[string]$path,[int]$timeoutMs=15000){
   }
 }
 
+# The printer's port-3030 file server is fragile: a request can come back code 0
+# (connection dropped) transiently, especially right after a large upload or a
+# delete. Retry ONLY that connection-level failure a few times with backoff; a real
+# HTTP status (200/404/...) returns immediately. Read-only, so safe mid-idle.
+function Printer-Request-Retry([string]$method,[string]$path,[int]$timeoutMs=15000,[int]$tries=4){
+  $r = $null
+  for ($i=1; $i -le $tries; $i++) {
+    $r = Printer-Request $method $path $timeoutMs
+    if ($r.code -ne 0) { return $r }
+    if ($i -lt $tries) { Start-Sleep -Milliseconds (400 * $i) }
+  }
+  return $r
+}
+
 # Build + send a multipart/form-data POST (used for SDCP chunked file upload).
 function Post-Multipart([string]$url,$fields,[string]$fileField,[string]$fileName,[byte[]]$fileBytes){
   $boundary = "----RevoBoundary" + [guid]::NewGuid().ToString("N")
@@ -222,9 +236,13 @@ tr.dir td.name{color:var(--acc);cursor:pointer}.chk{width:32px}
 td.name.ren{cursor:pointer}td.name.ren:hover{color:var(--acc);text-decoration:underline}
 a.dl{color:var(--acc);text-decoration:none}.muted{color:var(--mut)}.empty{padding:22px;text-align:center;color:var(--mut)}
 #msg{margin:10px 0;padding:10px 12px;border-radius:8px;display:none;white-space:pre-wrap;font-size:13px}
-#msg.ok{display:block;background:#12291a;border:1px solid #204a2c;color:#9be7ac}
-#msg.err{display:block;background:#2a1414;border:1px solid #5a2626;color:#ffb4b4}
-#msg.warn{display:block;background:#2a2410;border:1px solid #5a4f1f;color:#f0dd9a}
+#msg.ok,#msg.err,#msg.warn{display:flex;align-items:flex-start;gap:10px}
+#msg.ok{background:#12291a;border:1px solid #204a2c;color:#9be7ac}
+#msg.err{background:#2a1414;border:1px solid #5a2626;color:#ffb4b4}
+#msg.warn{background:#2a2410;border:1px solid #5a4f1f;color:#f0dd9a}
+.msgtext{flex:1;white-space:pre-wrap;word-break:break-word}
+.msgx{background:transparent;border:0;color:inherit;font:inherit;font-size:18px;line-height:1;cursor:pointer;padding:0 2px 0 6px;opacity:.65}
+.msgx:hover{opacity:1;border:0}
 .roots button{background:#12202f}
 #statusPill{font-weight:600}
 .st-idle{color:var(--ok);border-color:#20402a;background:#12291a}
@@ -309,7 +327,14 @@ let cur="/media/emmc/";
 const $=s=>document.querySelector(s);
 function fmt(b){if(b==null||b<0)return"";const u=["B","KB","MB","GB"];let i=0,n=+b;while(n>=1024&&i<3){n/=1024;i++}return n.toFixed(n<10&&i>0?1:0)+" "+u[i]}
 function dt(t){if(!t||t<0)return"";const d=new Date(t*1000);return d.toLocaleString()}
-function msg(t,cls){const m=$("#msg");m.textContent=t;m.className=cls||"";}
+function msg(t,cls){
+  const m=$("#msg");
+  if(!t){ m.className=""; m.innerHTML=""; return; }
+  m.className=cls||"";
+  const span=document.createElement("span");span.className="msgtext";span.textContent=t;
+  const x=document.createElement("button");x.className="msgx";x.type="button";x.title="Dismiss";x.setAttribute("aria-label","Dismiss");x.innerHTML="&times;";x.onclick=()=>msg("");
+  m.innerHTML="";m.appendChild(span);m.appendChild(x);
+}
 function crumbs(){const c=$("#crumbs");const parts=cur.split("/").filter(Boolean);let acc="/";let h=`<a onclick="go('/')">/</a> `;for(const p of parts){acc+=p+"/";const a=acc;h+=`<a onclick="go('${a}')">${p}</a>/ `;}c.innerHTML=h;}
 function go(p){cur=p.endsWith("/")?p:p+"/";reload({nav:true});}
 function up(){if(cur==="/")return;const p=cur.replace(/[^/]+\/$/,"");go(p||"/");}
@@ -863,12 +888,15 @@ while ($true) {
           # same directory, new (encoded) path for HTTP existence checks
           $dirEnc  = $oldPath.Substring(0, $oldPath.LastIndexOf('/') + 1)
           $newPathEnc = $dirEnc + [System.Uri]::EscapeDataString($newName)
-          if ((Printer-Request "HEAD" $newPathEnc).code -eq 200) {
+          if ((Printer-Request-Retry "HEAD" $newPathEnc).code -eq 200) {
             Send-Json $resp @{ ok=$false; error="A file named '$newName' already exists here." }
           } else {
-            $src = Printer-Request "GET" $oldPath 300000
+            $src = Printer-Request-Retry "GET" $oldPath 300000 4
             if ($src.code -ne 200) {
-              Send-Json $resp @{ ok=$false; error="Could not read the source file (printer $($src.code))." }
+              Log "RENAME read-source failed $oldName code=$($src.code) err=$($src.err)"
+              $hint = if ($src.code -eq 0) { " The printer's file server may be briefly busy right after an upload - wait a few seconds and try again." } else { "" }
+              $detail = if ($src.err) { ": " + $src.err } else { "" }
+              Send-Json $resp @{ ok=$false; error="Could not read the source file (printer $($src.code)$detail).$hint" }
             } else {
               $bytes = $src.bytes; $total = $bytes.Length; $uuid = [guid]::NewGuid().ToString("N")
               $CH = 1048576; $ok = $true; $errTxt = $null
@@ -884,12 +912,12 @@ while ($true) {
               if (-not $ok) {
                 Log "RENAME copy failed $oldName -> $newName : $errTxt"
                 Send-Json $resp @{ ok=$false; error=$errTxt }
-              } elseif ((Printer-Request "HEAD" $newPathEnc).code -ne 200) {
+              } elseif ((Printer-Request-Retry "HEAD" $newPathEnc).code -ne 200) {
                 Send-Json $resp @{ ok=$false; error="Copy did not verify - the new file was not found after upload. Original left untouched." }
               } else {
                 # new copy verified present -> remove the original via SDCP Cmd 259
                 $dr = Send-DeleteFiles @("/local/$oldName")
-                $delAfter = (Printer-Request "HEAD" $oldPath).code   # 404 = gone
+                $delAfter = (Printer-Request-Retry "HEAD" $oldPath).code   # 404 = gone
                 Log "RENAME $oldName -> $newName (ack=$($dr.ack) oldAfter=$delAfter)"
                 Send-Json $resp @{ ok=$true; newName=$newName; oldRemoved=($delAfter -eq 404); ack=$dr.ack }
               }

@@ -3,3 +3,14 @@ revo_server.log
 
 # local Claude Code settings
 .claude/
+
+# obj2step Python virtual environment (~600 MB; recreate via requirements.txt)
+files/.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# generated converter output (STEP/STL) and the raw archive
+OBJ_examples/out/
+files.zip

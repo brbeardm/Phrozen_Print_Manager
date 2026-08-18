@@ -243,12 +243,33 @@ td.act{white-space:nowrap}
 .modal-title{font-size:16px;font-weight:600;margin-bottom:12px}
 .modal-body{font-size:13px;color:var(--txt);white-space:normal;max-height:52vh;overflow:auto;line-height:1.55;word-break:break-word}
 .modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.convcard{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:14px 16px;margin-bottom:16px}
+.convhead{margin-bottom:10px;font-size:14px}
+.report{background:#0b0e12;border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:#b9c6d3;font:12px/1.5 Consolas,Menlo,monospace;white-space:pre-wrap;max-height:260px;overflow:auto;margin-top:12px}
+.dlrow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.dlrow a{text-decoration:none}
+.okbox{padding:10px 12px;border-radius:8px;background:#12291a;border:1px solid #204a2c;color:#9be7ac}
+@keyframes indet{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}
+.upfill.indet{width:30%;animation:indet 1.1s ease-in-out infinite}
 </style></head><body>
 <header><h1>Sonic Mighty 16K Revo &middot; Files</h1>
 <span class="pill" id="statusPill">printer: checking&hellip;</span><span class="sp"></span>
 <span class="pill" id="cntPill"></span>
 <button class="danger q" id="killBtn" onclick="killService()" title="Stop the local server on this PC so you can relaunch the latest version. Does not touch the printer.">&#9632; Exit / Kill Service</button></header>
 <main>
+  <div class="convcard">
+    <div class="convhead"><b>Tinkercad OBJ &rarr; Fusion STEP</b> <span class="muted">&mdash; drop a .obj, get a clean .step solid (converts locally; does not touch the printer)</span></div>
+    <div class="upzone" id="objzone">
+      <input type="file" id="objInput" accept=".obj" style="display:none">
+      <span id="objText">Drag a <b>.obj</b> here, or <a>click to browse</a></span>
+    </div>
+    <div id="objProg" style="display:none;margin-top:10px">
+      <div class="upbar"><div class="upfill indet" id="objFill"></div></div>
+      <div class="muted" id="objStatus" style="margin-top:6px"></div>
+    </div>
+    <div id="objResult" style="display:none"></div>
+    <pre id="objReport" class="report" style="display:none"></pre>
+  </div>
   <div class="bar roots">
     <b class="muted">Go to:</b>
     <button class="q" onclick="go('/media/emmc/')">Internal (emmc)</button>
@@ -511,8 +532,71 @@ async function killService(){
     '<h2 style="font-weight:600">Local service stopped.</h2>'+
     '<p class="muted" style="font-size:14px">You can close this tab.<br><br>To start again, type <b>phrozen</b> in a terminal.</p></main>';
 }
+// ---- OBJ -> STEP converter (local Python; never contacts the printer) ----
+function initObj(){
+  const z=$("#objzone"),fi=$("#objInput");
+  z.onclick=()=>fi.click();
+  fi.onchange=()=>{const f=fi.files[0];fi.value="";if(f)convertObj(f);};
+  ["dragenter","dragover"].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();z.classList.add("drag");}));
+  ["dragleave","dragend"].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();z.classList.remove("drag");}));
+  z.addEventListener("drop",e=>{e.preventDefault();e.stopPropagation();z.classList.remove("drag");const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)convertObj(f);});
+}
+async function convertObj(file){
+  if(!/\.obj$/i.test(file.name)){ if(!await confirmModal("Not a .obj file","This doesn't look like a Tinkercad <b>.obj</b> export:<br><br>&bull; "+escapeHtml(file.name)+"<br><br>Convert it anyway?","Convert",false))return; }
+  const z=$("#objzone"),prog=$("#objProg"),fill=$("#objFill"),stat=$("#objStatus"),res=$("#objResult"),rep=$("#objReport");
+  res.style.display="none";res.innerHTML="";rep.style.display="none";rep.textContent="";
+  z.style.pointerEvents="none";prog.style.display="block";fill.className="upfill indet";
+  stat.textContent="Uploading "+file.name+" ...";
+  let job;
+  try{
+    const buf=await file.arrayBuffer();
+    const r=await fetch("/api/obj2step/start?name="+encodeURIComponent(file.name),{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:buf});
+    const j=await r.json();
+    if(!j.ok)throw new Error(j.error||"could not start conversion");
+    job=j.job;
+  }catch(e){ z.style.pointerEvents="";prog.style.display="none"; await infoModal("Conversion failed","Could not start the converter:<br><br>"+escapeHtml(e.message)); return; }
+  const t0=Date.now();
+  while(true){
+    await new Promise(s=>setTimeout(s,1200));
+    let st;
+    try{ const r=await fetch("/api/obj2step/status?job="+job); st=await r.json(); }catch(e){ continue; }
+    if(st.state==="running"){ stat.textContent="Converting "+file.name+" ... "+Math.round((Date.now()-t0)/1000)+"s"; continue; }
+    if(st.state==="done"){ z.style.pointerEvents="";finishObj(job,file.name,st); return; }
+    if(st.ok===false){ z.style.pointerEvents="";prog.style.display="none"; await infoModal("Conversion failed",escapeHtml(st.error||"unknown error")); return; }
+  }
+}
+async function finishObj(job,name,st){
+  const prog=$("#objProg"),fill=$("#objFill"),stat=$("#objStatus"),res=$("#objResult"),rep=$("#objReport");
+  const files=Array.isArray(st.files)?st.files:(st.files?Object.values(st.files):[]);
+  const step=files.find(f=>f.kind==="step"),stl=files.find(f=>f.kind==="stl");
+  const rurl=f=>"/api/obj2step/result?job="+job+"&file="+encodeURIComponent(f.name);
+  fill.className="upfill";fill.style.width="100%";
+  if(st.success&&step){
+    stat.textContent="Done ("+name+").";
+    let h='<div class="okbox">Converted <b>'+escapeHtml(name)+'</b> to a STEP solid. In Fusion: <b>Insert &rarr; Insert CAD</b>, then test a fillet before building on it.</div><div class="dlrow">';
+    h+='<a href="'+rurl(step)+'"><button class="primary">&#8595; Download STEP</button></a>';
+    if(stl)h+='<a href="'+rurl(stl)+'"><button>&#8595; Download clean STL (fallback)</button></a>';
+    h+='<button class="q" onclick="toggleReport()">Show report</button></div>';
+    res.innerHTML=h;res.style.display="block";
+    rep.textContent=st.report||"";
+    // auto-start the STEP download (delivery = browser download)
+    const a=document.createElement("a");a.href=rurl(step);a.download=step.name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>{prog.style.display="none";},500);
+  }else{
+    prog.style.display="none";
+    const detail=(st.err||st.report||"").slice(-1400);
+    let h='<div class="dlrow">';
+    if(stl)h+='<a href="'+rurl(stl)+'"><button>&#8595; Download clean STL (fallback)</button></a>';
+    h+='<button class="q" onclick="toggleReport()">Show report</button></div>';
+    res.innerHTML=h;res.style.display="block";
+    rep.textContent=(st.report||"")+(detail?"\n\n[stderr]\n"+detail:"");
+    await infoModal("Conversion did not produce a STEP","The converter exited with code "+st.exit+" and no STEP file."+(stl?"<br><br>A cleaned <b>STL fallback</b> is available below &mdash; use Fusion's <b>Insert Mesh &rarr; Generate Face Groups &rarr; Convert Mesh</b>.":"")+"<br><br>Click <b>Show report</b> for details.");
+  }
+}
+function toggleReport(){const r=$("#objReport");r.style.display=(r.style.display==="none")?"block":"none";}
 go(cur);
 initUpload();
+initObj();
 pollStatus();
 window._statusTimer=setInterval(pollStatus,3000);
 </script></body></html>
@@ -619,6 +703,29 @@ $monRS = [runspacefactory]::CreateRunspace(); $monRS.Open()
 $monPS = [powershell]::Create(); $monPS.Runspace = $monRS
 [void]$monPS.AddScript($monitorScript).AddArgument($STATE).AddArgument($PrinterIp).AddArgument($PrinterPort)
 [void]$monPS.BeginInvoke()
+
+# ---------- OBJ -> STEP converter (local Python; NEVER contacts the printer) ----------
+# Each conversion runs as a detached Python process writing into its own temp job
+# folder, so a multi-second convert can't block the single-threaded HTTP listener.
+$PyExe    = Join-Path $PSScriptRoot "files\.venv\Scripts\python.exe"
+$Obj2Step = Join-Path $PSScriptRoot "files\obj2step.py"
+$ConvRoot = Join-Path ([IO.Path]::GetTempPath()) "revo_obj2step"
+try { $null = New-Item -ItemType Directory -Force -Path $ConvRoot } catch {}
+$JOBS = @{}   # jobId -> @{ proc; dir; stem }
+function Safe-Stem([string]$name){
+  $s = [IO.Path]::GetFileNameWithoutExtension("$name")
+  $s = ($s -replace '[^A-Za-z0-9 _.\-]','_').Trim()
+  if ([string]::IsNullOrWhiteSpace($s)) { $s = "model" }
+  return $s
+}
+# purge job folders older than 2h so temp doesn't grow without bound
+function Purge-OldJobs {
+  try {
+    Get-ChildItem $ConvRoot -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-2) } |
+      ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+  } catch {}
+}
 
 $script:shutdown = $false
 while ($true) {
@@ -774,6 +881,68 @@ while ($true) {
               }
             }
           }
+        }
+      }
+    }
+    elseif ($route -eq "/api/obj2step/start" -and $req.HttpMethod -eq "POST") {
+      # Save the uploaded .obj to a fresh job folder and launch the converter detached.
+      if (-not (Test-Path $PyExe)) {
+        Send-Json $resp @{ ok=$false; error="Python environment not found at $PyExe. Set up files\.venv (pip install -r files\requirements.txt)." } 500
+      } elseif (-not (Test-Path $Obj2Step)) {
+        Send-Json $resp @{ ok=$false; error="Converter script not found at $Obj2Step." } 500
+      } else {
+        Purge-OldJobs
+        $origName = $req.QueryString["name"]; if (-not $origName) { $origName = "model.obj" }
+        $stem = Safe-Stem $origName
+        $jid  = [guid]::NewGuid().ToString("N")
+        $jdir = Join-Path $ConvRoot $jid
+        $null = New-Item -ItemType Directory -Force -Path $jdir
+        $inPath = Join-Path $jdir ($stem + ".obj")
+        $fs = [IO.File]::Create($inPath); $req.InputStream.CopyTo($fs); $fs.Close()
+        $outLog = Join-Path $jdir "convert.out.log"
+        $errLog = Join-Path $jdir "convert.err.log"
+        try {
+          $argStr = '"{0}" "{1}" -o "{2}"' -f $Obj2Step, $inPath, $jdir
+          $p = Start-Process -FilePath $PyExe -ArgumentList $argStr -WorkingDirectory (Split-Path $Obj2Step) `
+                 -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden -PassThru
+          # Cache the OS handle NOW, or .ExitCode reads back empty after the process exits.
+          try { $null = $p.Handle } catch {}
+          $JOBS[$jid] = @{ proc=$p; dir=$jdir; stem=$stem; outLog=$outLog; errLog=$errLog }
+          Log "OBJ2STEP start job=$jid stem=$stem pid=$($p.Id)"
+          Send-Json $resp @{ ok=$true; job=$jid }
+        } catch {
+          Log "OBJ2STEP start failed: $($_.Exception.Message)"
+          Send-Json $resp @{ ok=$false; error=$_.Exception.Message } 500
+        }
+      }
+    }
+    elseif ($route -eq "/api/obj2step/status") {
+      $jid = $req.QueryString["job"]; $job = $JOBS[$jid]
+      if (-not $job) { Send-Json $resp @{ ok=$false; error="unknown job" } 404 }
+      elseif (-not $job.proc.HasExited) { Send-Json $resp @{ ok=$true; state="running" } }
+      else {
+        $exit = $job.proc.ExitCode
+        $report = ""; try { if (Test-Path $job.outLog) { $report = [IO.File]::ReadAllText($job.outLog) } } catch {}
+        $errTxt = ""; try { if (Test-Path $job.errLog) { $errTxt = [IO.File]::ReadAllText($job.errLog) } } catch {}
+        $stepName = $job.stem + ".step"; $stlName = $job.stem + "-clean.stl"
+        $files = @()
+        if (Test-Path (Join-Path $job.dir $stepName)) { $files += @{ name=$stepName; kind="step" } }
+        if (Test-Path (Join-Path $job.dir $stlName))  { $files += @{ name=$stlName;  kind="stl"  } }
+        $okc = ($exit -eq 0) -and (Test-Path (Join-Path $job.dir $stepName))
+        Send-Json $resp @{ ok=$true; state="done"; exit=$exit; success=$okc; report=$report; err=$errTxt; files=@($files) }
+      }
+    }
+    elseif ($route -eq "/api/obj2step/result") {
+      # stream a produced file back as a download (job folder only; name is basename-checked)
+      $jid = $req.QueryString["job"]; $fname = $req.QueryString["file"]; $job = $JOBS[$jid]
+      if (-not $job) { Send-Json $resp @{ error="unknown job" } 404 }
+      else {
+        $safe  = [IO.Path]::GetFileName("$fname")   # strips any path components (no traversal)
+        $fpath = Join-Path $job.dir $safe
+        if (-not $safe -or -not (Test-Path $fpath)) { Send-Json $resp @{ error="file not found" } 404 }
+        else {
+          $resp.AddHeader("Content-Disposition","attachment; filename=`"$safe`"")
+          Send-Bytes $resp ([IO.File]::ReadAllBytes($fpath)) "application/octet-stream"
         }
       }
     }

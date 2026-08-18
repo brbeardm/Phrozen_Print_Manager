@@ -1,0 +1,9 @@
+# Known-good, tested versions (Python 3.14, Windows) for obj2step.py.
+# All three OBJ_examples convert to valid STEP solids with 0 orientation
+# conflicts on this set. Use `pip install -r requirements.lock.txt` for an
+# exact reproduction; requirements.txt keeps the looser >= ranges.
+cadquery-ocp==7.9.3.1.1
+numpy==2.5.2
+pymeshlab==2025.7.post1
+scipy==1.18.0
+trimesh==5.0.0

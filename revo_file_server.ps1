@@ -246,7 +246,8 @@ td.act{white-space:nowrap}
 </style></head><body>
 <header><h1>Sonic Mighty 16K Revo &middot; Files</h1>
 <span class="pill" id="statusPill">printer: checking&hellip;</span><span class="sp"></span>
-<span class="pill" id="cntPill"></span></header>
+<span class="pill" id="cntPill"></span>
+<button class="danger q" id="killBtn" onclick="killService()" title="Stop the local server on this PC so you can relaunch the latest version. Does not touch the printer.">&#9632; Exit / Kill Service</button></header>
 <main>
   <div class="bar roots">
     <b class="muted">Go to:</b>
@@ -493,10 +494,27 @@ async function uploadFile(file){
     z.style.pointerEvents="";bar.style.display="none";st.style.display="none";fill.style.width="0%";
   }
 }
+// ---- stop the LOCAL server (so you can relaunch the latest build) ----
+// This only shuts down the PowerShell web server on this PC. It sends NOTHING
+// to the printer and does not affect a running print (which lives on the printer).
+async function killService(){
+  const printing=PRINTER.state==='printing';
+  let body=`This stops the <b>local web server</b> running on your PC so you can relaunch the latest version `+
+    `(just type <b>phrozen</b> again in a terminal).<br><br>`+
+    `It does <b>not</b> touch the printer &mdash; it only holds a read-only status connection, so nothing about the printer or any job changes.`;
+  if(printing) body+=`<br><br><b>Note:</b> a print is currently running. It will <b>keep printing</b> on the printer &mdash; you just won't see live status here until you relaunch.`;
+  if(!await confirmModal("Stop the local service?",body,"&#9632; Stop service",true))return;
+  if(window._statusTimer)clearInterval(window._statusTimer);
+  msg("stopping local service&hellip;","warn");
+  try{ await fetch("/api/shutdown",{method:"POST"}); }catch(e){}
+  document.body.innerHTML='<main style="padding:48px 20px;text-align:center">'+
+    '<h2 style="font-weight:600">Local service stopped.</h2>'+
+    '<p class="muted" style="font-size:14px">You can close this tab.<br><br>To start again, type <b>phrozen</b> in a terminal.</p></main>';
+}
 go(cur);
 initUpload();
 pollStatus();
-setInterval(pollStatus,3000);
+window._statusTimer=setInterval(pollStatus,3000);
 </script></body></html>
 '@
 
@@ -602,6 +620,7 @@ $monPS = [powershell]::Create(); $monPS.Runspace = $monRS
 [void]$monPS.AddScript($monitorScript).AddArgument($STATE).AddArgument($PrinterIp).AddArgument($PrinterPort)
 [void]$monPS.BeginInvoke()
 
+$script:shutdown = $false
 while ($true) {
   if (-not $listener.IsListening) { break }
   try { $ctx = $listener.GetContext() }
@@ -758,6 +777,13 @@ while ($true) {
         }
       }
     }
+    elseif ($route -eq "/api/shutdown" -and $req.HttpMethod -eq "POST") {
+      # Stops the LOCAL server only (lets the user relaunch the latest build).
+      # Sends nothing to the printer; a running print is unaffected.
+      Log "SHUTDOWN requested via UI"
+      Send-Json $resp @{ ok=$true; stopped=$true }
+      $script:shutdown = $true
+    }
     else { Send-Json $resp @{ error="not found" } 404 }
   } catch {
     Log "handler error on $($req.Url.PathAndQuery): $($_.Exception.Message)"
@@ -766,4 +792,14 @@ while ($true) {
     try { $resp.OutputStream.Close() } catch {}
     try { $resp.Close() } catch {}
   }
+  # UI asked us to stop: the response above is already flushed, so break cleanly.
+  if ($script:shutdown) { Log "shutting down (UI request)"; break }
 }
+
+# ---------- clean shutdown ----------
+try { $listener.Stop() }  catch {}
+try { $listener.Close() } catch {}
+try { $monPS.Stop() }     catch {}   # end the background status runspace
+try { $monRS.Close() }    catch {}
+Log "server stopped"
+Write-Host "Revo File Manager stopped. Type 'phrozen' to start it again." -ForegroundColor Yellow

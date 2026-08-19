@@ -14,3 +14,7 @@ __pycache__/
 # generated converter output (STEP/STL) and the raw archive
 OBJ_examples/out/
 files.zip
+
+# personal design scratch + debug artifacts in the repo root (not part of the tool)
+/tinker (*
+/fillet_error*.png

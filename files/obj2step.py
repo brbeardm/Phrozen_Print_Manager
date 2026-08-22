@@ -30,6 +30,7 @@ License: MIT
 """
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -457,6 +458,26 @@ def convert(inpath, outdir, do_fillet_test=False):
     w.Transfer(solid, STEPControl_AsIs)
     ok = w.Write(step_path) == IFSelect_RetDone
     log(f"STEP written: {step_path}" if ok else "STEP WRITE FAILED")
+
+    # Hole-schedule sidecar for the Fusion drill add-in. Detection runs on
+    # the welded pre-snap mesh (the configuration the detector was validated
+    # on); its model-frame coords match the STEP within snap clamp (0.2 mm).
+    holes_path = os.path.join(outdir, stem + "-holes.json")
+    if not m.is_watertight:
+        log("hole schedule skipped (mesh not watertight; void probe "
+            "needs a closed surface)")
+    else:
+        try:
+            import detect_holes
+            sched = detect_holes.build_schedule(
+                detect_holes.analyze(m), source_path=inpath,
+                step_path=step_path, bounds=np.asarray(m.bounds))
+            with open(holes_path, "w") as f:
+                json.dump(sched, f, indent=2)
+            log(f"hole schedule: {sched['hole_count']} drillable hole(s) "
+                f"-> {holes_path}")
+        except Exception as e:
+            log(f"hole schedule skipped ({type(e).__name__}: {e})")
 
     verdict_ok = ok and bad == 0
     print(f"  --> {'PASS' if verdict_ok else 'CHECK MANUALLY'}: "

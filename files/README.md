@@ -42,6 +42,46 @@ It also always writes a cleaned `-clean.stl` alongside the STEP, as a
 fallback for Fusion's own **Insert Mesh → Generate Face Groups → Convert
 Mesh** route.
 
+### Hole-schedule sidecar
+
+Faceted cylindrical bores (screw holes, counterbores, bosses) are detected
+automatically (`detect_holes.py`) and written to a `name-holes.json` sidecar
+next to the STEP — schema `obj2step-hole-schedule/1`. For each drillable
+hole it records the entry point, drill direction, through/blind type, total
+depth, and the diameter/depth profile from the entry face inward (so a
+counterbore is two segments). Coordinates are model-frame millimetres,
+identical to the STEP's frame, so a downstream tool (e.g. a Fusion add-in)
+can place true cylindrical holes without any transformation. Detection is
+skipped — never fatal — if the mesh isn't watertight.
+
+`detect_holes.py` also runs standalone:
+
+```bash
+python detect_holes.py my_design.obj            # report + sidecar
+python detect_holes.py my_design.obj --no-json  # report only
+```
+
+### One-click drilling in Fusion (`fusion_drill_holes.py`)
+
+Runs **inside Fusion** and turns every faceted bore into a true cylinder by
+boolean-cutting the schedule's holes (the faceted polygon is inscribed in
+the fitted circle, so the cut consumes the facet slivers entirely):
+
+1. One-time install: copy the script as
+   `%APPDATA%\Autodesk\Autodesk Fusion 360\API\Scripts\fusion_drill_holes\fusion_drill_holes.py`
+   — Fusion's script browser only detects the `folder\same-name.py`
+   structure, not loose `.py` files, and anything in this default location
+   appears in **UTILITIES → Scripts and Add-Ins** automatically (restart
+   the dialog after copying). The copy in this repo is the source of
+   truth; re-copy after editing it.
+2. Run it, click the body, pick the `-holes.json`.
+
+All holes land as a single Combine feature at the end of the timeline, so
+one Undo reverts everything. Run it **before** moving the inserted
+component (the schedule is in the STEP's own frame); fillets already in
+the timeline are unaffected as long as they aren't on the faceted bore
+edges themselves.
+
 ## Install
 
 **If you already have Python** (3.10–3.12):
@@ -95,8 +135,8 @@ the .step file**, then test a fillet on any edge before building on it.
   scarred locally. The reported max-deviation figure can be inflated by
   such faces (the mean deviation is the reliable number).
 - Curved surfaces (cylindrical bores) are represented as faceted planes —
-  same as any mesh conversion. Add true rounds/holes natively in Fusion
-  where they matter.
+  same as any mesh conversion. The hole-schedule sidecar tells you exactly
+  where and how deep to re-drill them natively in Fusion where they matter.
 - Only planar-faceted geometry is reconstructed (which is what Tinkercad
   exports). This is not a general reverse-engineering tool for 3D scans.
 
